@@ -58,7 +58,7 @@ type PollChoice =
 const pollChoices = new Map<string, PollChoice>()
 
 /** One attempt against one address: what it reported, or why it did not. */
-interface Probe {
+export interface Probe {
     parsed: JsonValue | null
     /** Empty when {@link parsed} is set, or when the poller was stopped. */
     reason: string
@@ -286,12 +286,7 @@ async function probeHost(
 }
 
 /** Remember the address that answered, and merge the telemetry it reported. */
-function accept(
-    nodeId: string,
-    host: string,
-    port: number,
-    parsed: JsonValue
-): void {
+function accept(nodeId: string, host: string, port: number, parsed: JsonValue): void {
     pollChoices.set(nodeId, { host, walkedAt: 0 })
     noteAnswering(nodeId, nodeInfoUrl(host, port))
     getModularBridgeState().mergeNodeInfoResponse(nodeId, parsed)
@@ -400,7 +395,13 @@ function pollTargetKey(hosts: string[], port: number): string {
     return `${port}|${hosts.join('|')}`
 }
 
-async function fetchNodeInfo(host: string, port: number, run: AbortSignal): Promise<Probe> {
+/**
+ * One HTTP GET of a host's `/v1/node-info`, bounded by the poll timeout and
+ * composed with the caller's signal. Shared by the poller and the subnet sweep
+ * (network-sweep.ts), so a found node and a polled node are verified by the
+ * exact same request.
+ */
+export async function fetchNodeInfo(host: string, port: number, run: AbortSignal): Promise<Probe> {
     const url = nodeInfoUrl(host, port)
     // This attempt's deadline, composed with the run's signal so a stop cancels the
     // request in flight rather than racing it to the end.

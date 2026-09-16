@@ -6,6 +6,7 @@ import path from 'path'
 import { getPaths } from '@/electron/globals'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
+    MODULAR_NODE_INFO_DEFAULT_PORT,
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
@@ -17,12 +18,32 @@ interface UiConfig {
     modularLogLevel: ModularLogLevel
     /** macOS only: the one-time privileged-helper setup (register the SMAppService daemon + configure the Application Firewall) has completed. Gates the first-run admin prompt; left false until the daemon is enabled and firewall configuration succeeds, so an approval-pending launch retries next time. */
     macHelperSetupComplete: boolean
+    /** Whether the automatic subnet sweep (network-sweep.ts) runs: probing each non-virtual IPv4 interface's subnet for PAIR's node-info service, which is what makes peers on multicast-less networks (OpenVPN tun, WireGuard) discoverable. */
+    networkSweepEnabled: boolean
+    /** Node-info port candidates for the sweep. The default covers every unmodified install; a node moved off the default port is found by listing the port here. */
+    networkSweepPorts: number[]
 }
 
 const DEFAULTS: UiConfig = {
     firstRun: true,
     modularLogLevel: MODULAR_DEFAULT_LOG_LEVEL,
-    macHelperSetupComplete: false
+    macHelperSetupComplete: false,
+    networkSweepEnabled: true,
+    networkSweepPorts: [MODULAR_NODE_INFO_DEFAULT_PORT]
+}
+
+/** Valid, de-duplicated sweep port candidates, first 8 only. */
+function sanitizeSweepPorts(ports: unknown): number[] | null {
+    if (!Array.isArray(ports)) return null
+    const out: number[] = []
+    for (const entry of ports) {
+        const port = typeof entry === 'number' ? entry : Number(entry)
+        if (!Number.isInteger(port) || port < 1 || port > 65535) continue
+        if (out.includes(port)) continue
+        out.push(port)
+        if (out.length >= 8) break
+    }
+    return out.length > 0 ? out : null
 }
 
 let config: UiConfig = { ...DEFAULTS }
@@ -119,5 +140,24 @@ export function isMacHelperSetupComplete(): boolean {
 
 export function setMacHelperSetupComplete(value: boolean): void {
     config.macHelperSetupComplete = value
+    save()
+}
+
+export function isNetworkSweepEnabled(): boolean {
+    return config.networkSweepEnabled !== false
+}
+
+export function setNetworkSweepEnabled(value: boolean): void {
+    config.networkSweepEnabled = value
+    save()
+}
+
+export function getNetworkSweepPorts(): number[] {
+    // Guard against a hand-edited / legacy config value, same as the log level.
+    return sanitizeSweepPorts(config.networkSweepPorts) ?? [...DEFAULTS.networkSweepPorts]
+}
+
+export function setNetworkSweepPorts(ports: number[]): void {
+    config.networkSweepPorts = sanitizeSweepPorts(ports) ?? [...DEFAULTS.networkSweepPorts]
     save()
 }

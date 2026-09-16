@@ -106,6 +106,16 @@ function entryValue(value: JsonValue | undefined): ManualNodeEntry | null {
  * on it. Re-adding the same address replaces its entry rather than duplicating
  * it, so changing a node's ports is just adding it again.
  */
+/**
+ * Whether a persisted manual entry already owns any of `addresses` — i.e. the
+ * node behind them is already tracked by address and must not be registered a
+ * second time. The inverse of {@link resolveManualNodeKey} for callers that
+ * only need the yes/no.
+ */
+export function hasManualNodeEntryFor(addresses: readonly string[]): boolean {
+    return resolveManualNodeKey(addresses) !== null
+}
+
 export function addManualNodeEntry(address: string, ports?: ManualServicePorts): ManualNodeEntry {
     const trimmed = address.trim()
     const kept = ports ? definedPorts(ports) : undefined

@@ -31,10 +31,12 @@ import { mergePullProgressPercent } from './pull-error-handling'
 import type { JsonObject, JsonRpcNotification, JsonValue } from './json-rpc-subprocess'
 import { serviceLogLevel } from './service-log-level'
 // Live node sources are the two reverse proxies, relayed through the broker,
-// and the broker's consolidated discovery snapshot. Electron does not consume
-// worker discovery protocols directly.
+// the broker's consolidated discovery snapshot, and the desktop's own subnet
+// sweep (network-sweep.ts). Electron does not consume worker discovery
+// protocols directly.
 type ProxyNodeSource = 'ollama-proxy' | 'lmstudio-proxy'
 type BrokerNodeSource = ProxyNodeSource | 'broker'
+type NodeSource = BrokerNodeSource | 'sweep'
 
 /**
  * Engines surfaced by the broker's proxy plane. Other engine-manager engines
@@ -89,7 +91,7 @@ interface ModularNode {
     // error `nodeId`, and proxy routing all resolve against it. Never key,
     // dedupe, or attribute by hostname — that is display only (`name`).
     id: string
-    sources: BrokerNodeSource[]
+    sources: NodeSource[]
     // Display hostname (broker `AvailableNode.name` / proxy `Node.Host`). Shown
     // to the user; never a correlation key.
     name: string
@@ -116,6 +118,12 @@ interface ModularNode {
     // discovers independently of the broker. Projected behind the broker's order
     // by {@link nodeAddresses}, and the only address list a proxy-only node has.
     proxyAddresses: string[]
+    // Addresses the subnet sweep verified this round (network-sweep.ts): the
+    // address a live `/v1/node-info` answer came from, typically a VPN address
+    // multicast never carries. Its own list for the same per-source reason as
+    // {@link brokerAddresses} — a sweep round replaces it wholesale, and a
+    // round that no longer confirms an address must be able to drop it.
+    sweepAddresses: string[]
     // The node's canonical LAN address. Both discovery sources now stamp it with
     // the backend's shared `netpick.Primary` result: the broker's
     // `AvailableNode.ipAddress` and the proxy `node/*` `ip` field. Used directly
@@ -466,12 +474,16 @@ function mergeAddresses(existing: string[], next: string[]): string[] {
 
 /**
  * Every address a node is currently known to answer at: the broker's ranked
- * order first, then whatever only the proxy feed reported. The single effective
- * list — poll order, `NodeItem.allIpAddresses`, and `AvailableNode.ipAddresses`
- * all derive from it, so none of them can outlive a broker re-rank.
+ * order first, then whatever only the proxy feed or the subnet sweep reported.
+ * The single effective list — poll order, `NodeItem.allIpAddresses`, and
+ * `AvailableNode.ipAddresses` all derive from it, so none of them can outlive
+ * a broker re-rank or an unconfirmed sweep round.
  */
 function nodeAddresses(node: ModularNode): string[] {
-    return mergeAddresses(node.brokerAddresses, node.proxyAddresses)
+    return mergeAddresses(
+        node.brokerAddresses,
+        mergeAddresses(node.proxyAddresses, node.sweepAddresses)
+    )
 }
 
 /**
@@ -485,11 +497,11 @@ function primaryNodeAddress(node: ModularNode): string {
     return node.reachableAddress || node.host
 }
 
-function mergeSources(sources: BrokerNodeSource[], source: BrokerNodeSource): BrokerNodeSource[] {
+function mergeSources(sources: NodeSource[], source: NodeSource): NodeSource[] {
     return sources.includes(source) ? sources : [...sources, source]
 }
 
-function removeSource(sources: BrokerNodeSource[], source: BrokerNodeSource): BrokerNodeSource[] {
+function removeSource(sources: NodeSource[], source: NodeSource): NodeSource[] {
     return sources.filter(entry => entry !== source)
 }
 
@@ -752,6 +764,9 @@ function parseProxyNode(params: JsonValue | undefined, engine: ProxyEngine): Mod
         // this feed's own contribution and are kept behind the broker's list.
         brokerAddresses: [],
         proxyAddresses: stringArrayValue(obj.addresses),
+        // The proxy feed contributes no sweep-verified addresses; see
+        // {@link ModularNode.sweepAddresses}.
+        sweepAddresses: [],
         // The proxy stamps the node's canonical LAN address (netpick.Primary over
         // its TXT + addresses) on the `ip` field of every node/* payload,
         // so a proxy-only node carries a real reachable address instead
@@ -793,6 +808,9 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         nodeInfoUp: Boolean(ipAddress) && port > 0,
         brokerAddresses,
         proxyAddresses: [],
+        // The broker snapshot contributes no sweep-verified addresses; see
+        // {@link ModularNode.sweepAddresses}.
+        sweepAddresses: [],
         // Broker `AvailableNode.ipAddress` is the head of the node's own ranked
         // candidate list — one canonical address shared across broker /
         // cluster-manager / errors / workload-manager, so the display IP and the
@@ -819,6 +837,47 @@ function parseBrokerNode(params: JsonValue | undefined): ModularNode | null {
         loadedByEngine: parseModelsByEngine(obj.loadedByEngine),
         engines: emptyEngines(),
         lastSeen: normalizeLastSeen(numberValue(obj.lastSeen) || numberValue(obj.last_seen))
+    }
+}
+
+/**
+ * Build the node a subnet sweep contributes: the sweep verified a live
+ * `/v1/node-info` answer at `address:port`, and that answer named `id` as the
+ * host's UUID — the canonical key every other feed uses. Mirrors
+ * {@link parseProxyNode}: a swept record owns only what the sweep can know (its
+ * verified address and port); every discovery-owned fact (hostname, trust,
+ * cluster flags, engines, models) is left for the merge to take from a
+ * discovery record when one exists.
+ */
+function sweptNode(found: {
+    id: string
+    address: string
+    port: number
+    name?: string
+}): ModularNode {
+    return {
+        id: found.id,
+        sources: ['sweep'],
+        // A swept node's display label before discovery names it is the verified
+        // address itself; a node-info `name` (when present) is preferred.
+        name: found.name || found.address,
+        host: found.address,
+        trusted: false,
+        clustered: false,
+        nodeInfoPort: found.port,
+        nodeInfoUp: true,
+        brokerAddresses: [],
+        proxyAddresses: [],
+        sweepAddresses: [found.address],
+        reachableAddress: found.address,
+        gpus: [],
+        cpu: null,
+        memory: null,
+        models: [],
+        modelsByEngine: {},
+        loadedByEngine: {},
+        engines: emptyEngines(),
+        lastSeen: Date.now()
     }
 }
 
@@ -862,6 +921,7 @@ function sameNode(left: ModularNode, right: ModularNode): boolean {
         // node's own ranking of where to reach it, and it drives the poll order.
         sameStringList(left.brokerAddresses, right.brokerAddresses) &&
         sameStringSet(left.proxyAddresses, right.proxyAddresses) &&
+        sameStringSet(left.sweepAddresses, right.sweepAddresses) &&
         sameTelemetry(left, right.gpus, right.cpu, right.memory, right.inferenceHardwareIds) &&
         sameStringList(left.models, right.models) &&
         sameModelsByEngine(left.modelsByEngine, right.modelsByEngine) &&
@@ -1209,6 +1269,50 @@ class ModularBridgeState {
             targets.push({ id: node.id, hosts, port: node.nodeInfoPort })
         }
         return targets
+    }
+
+    /**
+     * A subnet sweep verified this host answers node-info at `address:port`
+     * (network-sweep.ts). Upserts it as a `'sweep'`-sourced node: it appears in
+     * `getAvailableNodes` (so the discovered list and invite flow pick it up)
+     * and in the node-info poll targets (so its telemetry stays fresh after the
+     * sweep's one-shot find). Self is ignored — a NAT'd VPN can route this
+     * machine's own address back to it, and self already has a record.
+     */
+    upsertSweptNode(found: { id: string; address: string; port: number; name?: string }): void {
+        if (!found.id || found.id === this.selfId) return
+        this.upsertNode(sweptNode(found), 'sweep')
+    }
+
+    /**
+     * Drop the sweep source from every node the just-completed round did NOT
+     * confirm. A node no other source claims is evicted; a discovery-fed node
+     * keeps its record (only the sweep's address contribution goes). Called only
+     * with a completed round's evidence — an aborted round reconciles nothing,
+     * so a stop mid-sweep never evicts on incomplete data. An empty set (sweep
+     * disabled, or no interface left to sweep) drops every swept node.
+     */
+    reconcileSweptNodes(confirmed: ReadonlySet<string>): void {
+        for (const node of Array.from(this.nodes.values())) {
+            if (!node.sources.includes('sweep')) continue
+            if (confirmed.has(node.id)) continue
+            this.removeSweepSource(node.id)
+        }
+    }
+
+    /** Remove one node's sweep contribution, evicting the node if nothing else claims it. */
+    private removeSweepSource(nodeId: string): void {
+        const existing = this.nodes.get(nodeId)
+        if (!existing) return
+        const sources = removeSource(existing.sources, 'sweep')
+        if (sources.length === 0) {
+            this.removeNodeEntry(nodeId)
+            return
+        }
+        // Sources-only change: nothing `getAvailableNodes` projects differs (the
+        // sweep's addresses leave with it), so no push — contrast
+        // `removeBrokerNode`, which clears port/telemetry and must re-emit.
+        this.nodes.set(nodeId, { ...existing, sources, sweepAddresses: [] })
     }
 
     mergeNodeInfoResponse(nodeId: string, response: JsonValue): void {
@@ -2394,16 +2498,23 @@ class ModularBridgeState {
 
         // A proxy source still reports the node; drop only the node-info snapshot
         // (the broker is the sole node-info / telemetry source now).
+        //
+        // A sweep source changes that: its port and address were verified live
+        // within the last round, so zeroing them would freeze the poller on a
+        // still-reachable (typically VPN) peer — keep them, and fall the
+        // canonical address back to the sweep's verified address rather than
+        // empty, since the broker's own address was just declared stale.
+        const swept = remainingSources.includes('sweep')
         const next: ModularNode = {
             ...existing,
             sources: remainingSources,
-            nodeInfoPort: 0,
-            nodeInfoUp: false,
+            nodeInfoPort: swept ? existing.nodeInfoPort : 0,
+            nodeInfoUp: swept ? existing.nodeInfoUp : false,
             // Clear the broker's now-stale canonical address and ranking; a
             // still-present proxy source repopulates `reachableAddress` from its
             // `ip` field on the next node/* event, so we never keep a dead broker
             // IP — nor project addresses no live source claims any more.
-            reachableAddress: '',
+            reachableAddress: swept ? (existing.sweepAddresses[0] ?? '') : '',
             brokerAddresses: [],
             gpus: [],
             cpu: null,
@@ -2414,7 +2525,7 @@ class ModularBridgeState {
         this.emitNodeChanged(next)
     }
 
-    private upsertNode(node: ModularNode, source?: BrokerNodeSource): void {
+    private upsertNode(node: ModularNode, source?: NodeSource): void {
         // Self is identified authoritatively by the cluster-manager's node UUID
         // (`cluster:get-node-id`), which equals the discovery/proxy hostUuid key,
         // so there is no hostname guessing here — `setSelfId` is the sole source.
@@ -2559,7 +2670,7 @@ class ModularBridgeState {
     private mergeNode(
         existing: ModularNode | undefined,
         next: ModularNode,
-        source: BrokerNodeSource | undefined
+        source: NodeSource | undefined
     ): ModularNode {
         if (!existing || !source) return next
 
@@ -2589,6 +2700,43 @@ class ModularBridgeState {
                 memory: existing.memory,
                 inferenceHardwareIds: existing.inferenceHardwareIds,
                 engines: existing.engines
+            }
+        }
+
+        // A subnet sweep (network-sweep.ts): it owns exactly one thing — a live
+        // node-info answer at this address and port. Everything discovery owns
+        // (hostname, trust/cluster flags, engines, models, ranked addresses)
+        // stays with the existing record; everything the sweep verified (the
+        // port that answered, this round's address) the sweep wins.
+        if (source === 'sweep') {
+            return {
+                ...next,
+                sources: mergeSources(existing.sources, 'sweep'),
+                name: existing.name || next.name,
+                trusted: existing.trusted,
+                clustered: existing.clustered,
+                brokerAddresses: existing.brokerAddresses,
+                proxyAddresses: existing.proxyAddresses,
+                // Broker-known nodes keep the broker's canonical address: display
+                // and polling must not flap between the LAN and VPN paths. A
+                // sweep-only node takes the freshest swept address.
+                reachableAddress: existing.sources.includes('broker')
+                    ? existing.reachableAddress
+                    : next.reachableAddress || existing.reachableAddress,
+                // The port that just answered is a live fact; a recorded port (or
+                // none) must never override it — non-default ports only ever get
+                // in via the sweep finding them there.
+                nodeInfoPort: next.nodeInfoPort > 0 ? next.nodeInfoPort : existing.nodeInfoPort,
+                nodeInfoUp: next.nodeInfoUp || existing.nodeInfoUp,
+                gpus: existing.gpus,
+                cpu: existing.cpu,
+                memory: existing.memory,
+                inferenceHardwareIds: existing.inferenceHardwareIds,
+                models: existing.models,
+                modelsByEngine: existing.modelsByEngine,
+                loadedByEngine: existing.loadedByEngine,
+                engines: existing.engines,
+                lastSeen: Math.max(existing.lastSeen, next.lastSeen)
             }
         }
 

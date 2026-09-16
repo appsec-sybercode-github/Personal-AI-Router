@@ -5,10 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
     Badge,
     Button,
+    Checkbox,
     Dropdown,
     Flex,
+    FormField,
     Stack,
     Text,
+    TextInput,
     type DropdownEntry
 } from '@nvidia/foundations-react-core'
 import { useConnectionStore } from '@/ui/stores/connection.store'
@@ -17,8 +20,10 @@ import type { ServiceStatus } from '@/shared/types/ipc-channels'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_LOG_LEVELS,
+    MODULAR_NODE_INFO_DEFAULT_PORT,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
+import { parseSweepPortList } from '@/shared/utils/sweep-ports'
 import getErrorString from '@/shared/utils/get-error-string'
 import { DismissibleTooltip } from '@/ui/components/DismissibleTooltip/DismissibleTooltip'
 import { isElectron } from '@/ui/api/bootstrap'
@@ -101,6 +106,10 @@ export default function ServiceSettings() {
     const [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState<string | null>(null)
     const [logLevel, setLogLevel] = useState<ModularLogLevel>(MODULAR_DEFAULT_LOG_LEVEL)
+    const [sweepEnabled, setSweepEnabled] = useState(true)
+    const [sweepPorts, setSweepPorts] = useState<number[]>([MODULAR_NODE_INFO_DEFAULT_PORT])
+    const [sweepPortsDraft, setSweepPortsDraft] = useState('')
+    const [savingSweepPorts, setSavingSweepPorts] = useState(false)
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const [startingDemo, setStartingDemo] = useState(false)
     const setActiveTab = useOverviewUiStore(state => state.setActiveTab)
@@ -140,6 +149,18 @@ export default function ServiceSettings() {
             .catch(() => {})
     }, [])
 
+    useEffect(() => {
+        if (!isElectron) return
+        window.windowApi.service
+            .getNetworkSweep()
+            .then(config => {
+                setSweepEnabled(config.enabled)
+                setSweepPorts(config.ports)
+                setSweepPortsDraft(config.ports.join(', '))
+            })
+            .catch(() => {})
+    }, [])
+
     const handleLogLevelChange = useCallback(
         async (level: ModularLogLevel) => {
             const prev = logLevel
@@ -162,6 +183,49 @@ export default function ServiceSettings() {
             })),
         [handleLogLevelChange]
     )
+
+    // The toggle applies immediately, like the log level; the ports are a draft
+    // with an explicit Save so a half-typed list never reaches the sweeper.
+    const handleSweepEnabledChange = useCallback(
+        async (checked: boolean | 'indeterminate') => {
+            const enabled = checked === true
+            const prev = sweepEnabled
+            setSweepEnabled(enabled)
+            try {
+                await window.windowApi.service.setNetworkSweep({ enabled, ports: sweepPorts })
+            } catch (err) {
+                setSweepEnabled(prev)
+                setError(getErrorString(err))
+            }
+        },
+        [sweepEnabled, sweepPorts]
+    )
+
+    const sweepPortsDraftParsed = useMemo(
+        () => parseSweepPortList(sweepPortsDraft),
+        [sweepPortsDraft]
+    )
+    const sweepPortsDirty =
+        sweepPortsDraftParsed.length > 0 && sweepPortsDraftParsed.join(',') !== sweepPorts.join(',')
+
+    const handleSaveSweepPorts = useCallback(async () => {
+        const ports = sweepPortsDraftParsed
+        if (ports.length === 0) return
+        const prevPorts = sweepPorts
+        const prevDraft = sweepPortsDraft
+        setSweepPorts(ports)
+        setSweepPortsDraft(ports.join(', '))
+        setSavingSweepPorts(true)
+        try {
+            await window.windowApi.service.setNetworkSweep({ enabled: sweepEnabled, ports })
+        } catch (err) {
+            setSweepPorts(prevPorts)
+            setSweepPortsDraft(prevDraft)
+            setError(getErrorString(err))
+        } finally {
+            setSavingSweepPorts(false)
+        }
+    }, [sweepPortsDraftParsed, sweepPortsDraft, sweepPorts, sweepEnabled])
 
     const handleAction = useCallback(
         async (action: 'start' | 'stop' | 'restart') => {
@@ -370,6 +434,74 @@ export default function ServiceSettings() {
                                             <Download style={{ fontSize: 14, marginTop: -2 }} />
                                         </Flex>
                                     </button>
+                                </Flex>
+                            )}
+                        </Stack>
+
+                        <Stack gap="1">
+                            <Flex align="center" justify="between" gap="4">
+                                <Text kind="body/semibold/md">Network discovery</Text>
+                                {isElectron ? (
+                                    <Checkbox
+                                        checked={sweepEnabled}
+                                        onCheckedChange={checked =>
+                                            void handleSweepEnabledChange(checked)
+                                        }
+                                        slotLabel="Scan for PAIR nodes"
+                                        disabled={savingSweepPorts}
+                                    />
+                                ) : (
+                                    <DismissibleTooltip slotContent={BROWSER_TOOLTIP}>
+                                        <span className="inline-flex">
+                                            <Checkbox
+                                                checked={sweepEnabled}
+                                                disabled
+                                                slotLabel="Scan for PAIR nodes"
+                                            />
+                                        </span>
+                                    </DismissibleTooltip>
+                                )}
+                            </Flex>
+                            <Text kind="body/regular/sm" className="text-subtle-color">
+                                Probes the local and VPN subnets this machine is attached to for
+                                other PAIR nodes, so peers still show up on networks where mDNS does
+                                not pass — for example an OpenVPN tunnel. Applies immediately and
+                                persists across restarts; nodes it can no longer reach disappear
+                                within a minute.
+                            </Text>
+                            {isElectron && (
+                                <Flex align="end" gap="2" className="mt-1">
+                                    <FormField
+                                        slotLabel="Ports to scan (comma-separated)"
+                                        className="flex-1"
+                                    >
+                                        <TextInput
+                                            value={sweepPortsDraft}
+                                            onValueChange={setSweepPortsDraft}
+                                            placeholder="14318"
+                                            inputMode="numeric"
+                                            disabled={savingSweepPorts}
+                                            onKeyDown={event => {
+                                                if (event.key === 'Enter')
+                                                    void handleSaveSweepPorts()
+                                            }}
+                                        />
+                                    </FormField>
+                                    <Button
+                                        kind="secondary"
+                                        onClick={() => void handleSaveSweepPorts()}
+                                        disabled={!sweepPortsDirty || savingSweepPorts}
+                                    >
+                                        {savingSweepPorts ? (
+                                            <span
+                                                className="spinner-element"
+                                                role="status"
+                                                aria-label=""
+                                            />
+                                        ) : (
+                                            'Save'
+                                        )}
+                                    </Button>
                                 </Flex>
                             )}
                         </Stack>

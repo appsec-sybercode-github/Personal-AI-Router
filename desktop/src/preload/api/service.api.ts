@@ -3,7 +3,11 @@
 
 import { ipcRenderer } from 'electron'
 import { invokeAndUnwrap } from '@/preload/api/unwrap'
-import type { ServiceStatus, ServiceVersions } from '@/shared/types/ipc-channels'
+import type {
+    NetworkSweepConfig,
+    ServiceStatus,
+    ServiceVersions
+} from '@/shared/types/ipc-channels'
 import type { ModularLogLevel } from '@/shared/constants/modular-runtime'
 
 export interface IServiceApi {
@@ -14,6 +18,8 @@ export interface IServiceApi {
     restart(): Promise<void>
     getLogLevel(): Promise<ModularLogLevel>
     setLogLevel(level: ModularLogLevel): Promise<void>
+    getNetworkSweep(): Promise<NetworkSweepConfig>
+    setNetworkSweep(config: NetworkSweepConfig): Promise<void>
     openLogFile(): Promise<void>
     openLogDir(): Promise<void>
     openLicense(): Promise<void>
@@ -31,6 +37,10 @@ export const serviceApi: IServiceApi = {
         invokeAndUnwrap<ModularLogLevel>(ipcRenderer.invoke('service:get-log-level')),
     setLogLevel: level =>
         invokeAndUnwrap<void>(ipcRenderer.invoke('service:set-log-level', { level })),
+    getNetworkSweep: () =>
+        invokeAndUnwrap<NetworkSweepConfig>(ipcRenderer.invoke('service:get-network-sweep')),
+    setNetworkSweep: config =>
+        invokeAndUnwrap<void>(ipcRenderer.invoke('service:set-network-sweep', config)),
     openLogFile: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-log-file')),
     openLogDir: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-log-dir')),
     openLicense: () => invokeAndUnwrap<void>(ipcRenderer.invoke('service:open-license')),

@@ -134,6 +134,87 @@ Do not port-forward any of these on a public interface. The point of running PAI
 over a tailnet is that these ports are reachable only from machines you have
 admitted to it.
 
+## The same steps on OpenVPN
+
+An OpenVPN tunnel is the tailnet of the sections above with the names changed.
+A routed `tun` interface carries no multicast, so mDNS will not announce anyone
+— but if the tunnel hands your machine a real subnet, PAIR's automatic subnet
+sweep (next section) can still find the other side on its own, and the two of
+you may never need this walkthrough at all. When it does not, add the peer by
+address, and pairing, inventory, telemetry, and routing inference all work
+exactly as on a LAN. PAIR's trust is in the certificates; which tunnel carries
+the packets is not part of the question.
+
+**Give each peer a fixed address.** This is where the tailnet was kinder than
+OpenVPN is: MagicDNS supplied a name that PAIR re-resolves on every check, and
+OpenVPN supplies nothing. A client is handed an address from the server's pool
+and can be handed a different one next time, which strands a node added by IP
+address. Pin the address in the server's `client-config-dir`:
+
+```
+# ccd/gpu-box — the address this client always gets
+ifconfig-push 10.8.0.10 255.255.255.0
+```
+
+Or keep the address dynamic and add the node by a name you resolve yourself —
+an entry in `/etc/hosts` or your own DNS server pointing at the pinned address.
+
+**Let the clients reach each other.** An OpenVPN server does not forward
+traffic between its clients unless told to. PAIR needs a direct TCP path
+between the two machines running it, so enable `client-to-client` on the server
+or open the ports from the table above between clients in the server's
+firewall. `tailscale ping` has no equivalent here; test reachability directly,
+with `nc -vz 10.8.0.10 14318` from the machine adding the peer.
+
+**Expect a slower path.** A tailnet usually finds a direct UDP route between
+two machines. An OpenVPN tunnel most often runs over TCP, wrapping TCP inside
+TCP, and the first token takes noticeably longer to arrive across a long round
+trip. Inference still works.
+
+**TAP mode may discover on its own.** A bridged `tap` tunnel forwards
+broadcast traffic, so mDNS can cross it and the peer may appear under
+**Add node** without being added by hand. That is a pleasant accident, not
+something PAIR needs — `tun` is the simpler and faster configuration, and the
+walkthrough above applies to it unchanged.
+
+## Automatic subnet sweep
+
+For the networks mDNS cannot cross, PAIR does not wait to be told an address.
+The desktop app sweeps the IPv4 subnets its machine is attached to, looking for
+anything that answers like a PAIR node. A peer found this way shows up under
+**Discovered nodes** on the home page — a VPN subnet counts, so connecting to
+OpenVPN is enough for the machines on the other side to appear, and **Add**
+next to one starts PIN pairing with its address already filled in.
+
+**What is swept.** Every non-virtual, non-internal IPv4 interface with usable
+neighbors — the LAN, Wi-Fi, and VPN adapters (`utun`, `tun`, `tap`, a Tailscale
+interface are all in). Host-only bridges are left alone: the "neighbors"
+behind `docker`, `veth`, `vmnet`, `vEthernet`, and friends are this machine's
+own containers and VMs, not PAIR peers. A subnet wider than a `/24` is swept
+only across this machine's own `/24` window, so one huge corporate or VPN
+prefix cannot cost tens of thousands of connection attempts per round.
+Point-to-point links with no neighbors — `/31` and `/32`, which is what a
+Tailscale tailnet gives you — are skipped; on a tailnet, add the peer by
+MagicDNS name as described above.
+
+**How it recognizes a PAIR node.** A short TCP connect, then one plain request
+to the node-info port (`14318` unless configured otherwise). Anything that
+answers with a node identity is verified and recorded with the address and
+port that actually answered — a peer on non-default ports is found as long as
+its port is in the list. Nothing is paired by the sweep: trust still starts at
+the PIN. Swept peers are also not written to `manual-nodes.json`; they exist
+only as long as they keep answering.
+
+**Settings.** **Settings → Service → Network discovery** turns the sweep off
+entirely, and the port list can be changed — comma-separated, up to eight
+ports, `14318` by default. The change applies immediately and persists.
+
+**When a peer disappears.** A round runs shortly after startup, then about
+once a minute, and again soon after a network interface appears or goes away —
+so connecting the VPN triggers a sweep within seconds, not a minute. A peer a
+completed round can no longer confirm is withdrawn within about a minute,
+which is what a dropped VPN tunnel looks like on the home page.
+
 ## Troubleshooting
 
 ### The node appears but has no models

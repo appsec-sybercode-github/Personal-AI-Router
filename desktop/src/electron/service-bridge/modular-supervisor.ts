@@ -31,6 +31,7 @@ import { engineManagerEngineName } from './empty-handlers'
 import { isFirstRun } from '@/electron/config/ui-config'
 import { parseClusterNodes, parseInvite, parseNodeIdentity } from './cluster-json'
 import { startNodeInfoPoller, stopNodeInfoPoller } from './node-info-poller'
+import { startNetworkSweep, stopNetworkSweep } from './network-sweep'
 import {
     MODULAR_DEFAULT_LOG_LEVEL,
     MODULAR_INVITE_STATUS_POLL_INTERVAL_MS,
@@ -38,7 +39,12 @@ import {
     isModularLogLevel,
     type ModularLogLevel
 } from '@/shared/constants/modular-runtime'
-import { listManualNodeEntries, manualPortsToWire } from './manual-nodes-store'
+import {
+    addManualNodeEntry,
+    hasManualNodeEntryFor,
+    listManualNodeEntries,
+    manualPortsToWire
+} from './manual-nodes-store'
 import {
     MODULAR_RUNTIME_BINARIES,
     modularBinaryFileName
@@ -531,6 +537,7 @@ class ModularSupervisor {
         this.isReady = true
         this.updateReadiness()
         startNodeInfoPoller()
+        startNetworkSweep()
         log.info({ sublevel: 'lifecycle', message: 'Started modular service processes' })
     }
 
@@ -539,6 +546,9 @@ class ModularSupervisor {
         // deliberate shutdown, not a crash.
         this.shuttingDown = true
         stopNodeInfoPoller()
+        // Drop swept nodes deterministically so a supervisor restart within one
+        // app run cannot show sweep-attributed peers for up to a round.
+        stopNetworkSweep({ dropSweptNodes: true })
         if (this.remoteStatusDebounceTimer) {
             clearTimeout(this.remoteStatusDebounceTimer)
             this.remoteStatusDebounceTimer = null
@@ -965,6 +975,60 @@ class ModularSupervisor {
                 .filter(m => m.state === 'member' && m.nodeUuid && m.nodeUuid !== selfId)
                 .map(m => m.nodeUuid)
         )
+    }
+
+    /**
+     * Register confirmed cluster members that no discovery record carries as
+     * manual nodes, so a peer that joined over a network with no multicast —
+     * accepted here, or folded in by a third node's membership push — does not
+     * stay invisible. Membership alone reaches the cluster manager, but the
+     * relay consumers (engine-manager's `ec` directory, the proxies, telemetry)
+     * key off discovery, and on such a network nothing ever arrives for the
+     * peer. The inviting side already does this at invite time
+     * (`handleClusterInviteNode`); this is the same durable entry + live
+     * `node/add` dance for every other way membership can appear.
+     *
+     * Gated on the peer being genuinely undiscovered: a member the scanner
+     * carries (a LAN peer) keeps the scanner's authoritative record, and one a
+     * persisted manual entry already owns is not re-registered. Deliberately
+     * not wired into the startup `seedClusterPeerIds` read — at startup the
+     * replay of persisted entries is the whole story, and racing the first
+     * discovery snapshot there would register LAN peers that are about to be
+     * discovered anyway.
+     */
+    private async registerClusterPeersWithoutDiscovery(members: ClusterNode[]): Promise<void> {
+        if (!this.hasProcess('broker')) return
+        const state = getModularBridgeState()
+        const selfId = state.getSelfId()
+        for (const member of members) {
+            if (member.state !== 'member' || !member.nodeUuid || member.nodeUuid === selfId) {
+                continue
+            }
+            if (!member.ipAddress) continue
+            // Discovered peers keep the scanner's record; a manual entry beside
+            // it could only duplicate what every consumer already has.
+            if (state.getNodeAddresses(member.nodeUuid).length > 0) continue
+            if (hasManualNodeEntryFor([member.ipAddress])) continue
+            const entry = addManualNodeEntry(member.ipAddress)
+            try {
+                await this.callProcess('broker', 'node/add', {
+                    address: entry.address,
+                    name: entry.name
+                })
+                log.info({
+                    sublevel: 'manual-nodes',
+                    message: `Registered cluster peer ${member.ipAddress} as a manual node; no discovery record carries it`,
+                    data: { nodeId: member.nodeUuid }
+                })
+            } catch (err) {
+                // Non-fatal, matching the invite path: the entry is persisted
+                // and replayed on the next start.
+                log.warn({
+                    sublevel: 'manual-nodes',
+                    message: `Failed to register cluster peer ${member.ipAddress}: ${getErrorString(err)}`
+                })
+            }
+        }
     }
 
     /**
@@ -1451,6 +1515,11 @@ class ModularSupervisor {
             // freshly-joined peer's engine state converges immediately. Keyed by
             // nodeUuid — the same key `engine:remote-*` and discovery use.
             this.setClusterPeerIds(members)
+            // A member that arrived without a discovery record (a peer joined
+            // over a no-multicast network) is registered as a manual node so the
+            // relay consumers can see it; fire-and-forget — the periodic status
+            // sweep picks the peer up once the broker has folded it in.
+            void this.registerClusterPeersWithoutDiscovery(members)
             void this.refreshAllRemoteEngineStatus()
             // A pairing that completed makes the inviter a `member`, so its
             // inbound invite (if any) is obsolete — drop it from the set.

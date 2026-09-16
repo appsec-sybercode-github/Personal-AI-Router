@@ -80,6 +80,32 @@ export const MODULAR_MODEL_ACTION_TIMEOUT_MS = 120_000
 // receiver-side `cluster:invite-canceled` / `cluster:invite-expired` push.
 export const MODULAR_INVITE_STATUS_POLL_INTERVAL_MS = 1_500
 
+// The node-info HTTP port every backend binds by default (`nvpair-node-info`
+// `:port`). The desktop never dials it blind — the sweep's port list is
+// configurable and the port recorded on a node is always the one that answered —
+// but the default candidate and the Add Node placeholder both come from here so
+// the two can never drift apart.
+export const MODULAR_NODE_INFO_DEFAULT_PORT = 14318
+
+// Automatic subnet sweep (network-sweep.ts). mDNS multicast does not cross a
+// layer-3 VPN tunnel (OpenVPN tun, WireGuard), so peers on such networks never
+// appear via discovery; the sweep actively probes each non-virtual IPv4
+// interface's subnet for the node-info service instead. See
+// docs/remote-networks.mdx.
+export const MODULAR_NETWORK_SWEEP_INTERVAL_MS = 60_000
+// Delay before the first round so selfId and interfaces settle at startup.
+export const MODULAR_NETWORK_SWEEP_STARTUP_DELAY_MS = 3_000
+// How often interfaces are re-read to notice a VPN coming or going.
+export const MODULAR_NETWORK_SWEEP_INTERFACE_WATCH_MS = 5_000
+// One TCP connect attempt against one host. A dead host costs exactly this.
+export const MODULAR_NETWORK_SWEEP_CONNECT_TIMEOUT_MS = 400
+// Simultaneous probes across the whole round (every subnet × port).
+export const MODULAR_NETWORK_SWEEP_CONCURRENCY = 64
+// Minimum spacing between two rounds, guarding against interface flap churn.
+export const MODULAR_NETWORK_SWEEP_MIN_GAP_MS = 10_000
+// Debounce between an interface change being observed and a round firing.
+export const MODULAR_NETWORK_SWEEP_INTERFACE_DEBOUNCE_MS = 2_000
+
 // Minimum `lastSeen` gap before one node record is treated as having superseded
 // another that shares its address and hostname — a machine whose appdata was
 // wiped rejoins under a fresh hostUuid and would otherwise show twice.

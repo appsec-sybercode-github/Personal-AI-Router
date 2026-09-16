@@ -6,7 +6,7 @@
  * Root component for the PAIR management application
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Flex, Stack, Text } from '@nvidia/foundations-react-core'
 import { useConnectionStore } from '@/ui/stores/connection.store'
 import { useNodesStore } from '@/ui/stores/nodes.store'
@@ -46,6 +46,19 @@ function MainApp() {
             : false
     )
     const [addNodeModalOpen, setAddNodeModalOpen] = useState(false)
+    // Address of a discovered peer to auto-invite when the modal opens; null for
+    // a plain "Add node" open. Cleared on every close — otherwise the next
+    // ContentBar open would inherit a stale address and auto-start an invite
+    // the user never asked for.
+    const [addNodeInviteAddress, setAddNodeInviteAddress] = useState<string | null>(null)
+    const openAddNodeForPeer = useCallback((address: string) => {
+        setAddNodeInviteAddress(address)
+        setAddNodeModalOpen(true)
+    }, [])
+    const handleAddNodeModalOpenChange = useCallback((open: boolean) => {
+        setAddNodeModalOpen(open)
+        if (!open) setAddNodeInviteAddress(null)
+    }, [])
     const [welcomeOpen, setWelcomeOpen] = useState(false)
     const firstRunChecked = useRef(false)
     const [endPointModalOpen, setEndPointModalOpen] = useState(false)
@@ -114,12 +127,17 @@ function MainApp() {
                     <ClusterContent
                         setAddNodeModalOpen={setAddNodeModalOpen}
                         setEndPointModalOpen={setEndPointModalOpen}
+                        onInviteDiscoveredNode={openAddNodeForPeer}
                     />
                 )}
             </Stack>
 
             <EndPointModal open={endPointModalOpen} onOpenChange={setEndPointModalOpen} />
-            <AddNodeModal open={addNodeModalOpen} onOpenChange={setAddNodeModalOpen} />
+            <AddNodeModal
+                open={addNodeModalOpen}
+                onOpenChange={handleAddNodeModalOpenChange}
+                inviteAddress={addNodeInviteAddress ?? undefined}
+            />
             <InviteApprovalModal />
 
             {messages[0] && (

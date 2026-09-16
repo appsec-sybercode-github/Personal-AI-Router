@@ -8,7 +8,9 @@ import { OverlayScrollbarsComponent } from 'overlayscrollbars-react'
 import type { PartialOptions } from 'overlayscrollbars'
 import type { NodeItem } from '@/shared/types/nodes'
 import { useOverviewNodes } from '@/ui/hooks/useOverviewNodes'
+import { useInvitablePeers } from '@/ui/hooks/useInvitablePeers'
 import NodeCardDetails from './NodeCardDetails'
+import DiscoveredNodesSection from './DiscoveredNodesSection'
 import { CONNECTIONS_WIDTH } from '@/ui/constants/app'
 import OfflineNode from './OfflineNode'
 
@@ -16,8 +18,9 @@ const SCROLLBAR_OPTIONS = {
     scrollbars: { autoHide: 'leave', autoHideDelay: 800 }
 } satisfies PartialOptions
 
-function NodeList() {
+function NodeList({ onInvitePeer }: { onInvitePeer: (address: string) => void }) {
     const allNodes = useOverviewNodes()
+    const invitablePeers = useInvitablePeers()
 
     const { online, offline } = useMemo(() => {
         const on: NodeItem[] = []
@@ -32,7 +35,9 @@ function NodeList() {
         return { online: on, offline: off }
     }, [allNodes])
 
-    if (online.length === 0 && offline.length === 0) {
+    // Discovered-but-not-member peers keep the column alive on a member-less
+    // machine: there is still something to show and invite from.
+    if (online.length === 0 && offline.length === 0 && invitablePeers.length === 0) {
         return <Stack className="grow min-w-0 h-full" />
     }
 
@@ -62,6 +67,8 @@ function NodeList() {
                                 ipAddress={node.ipAddress}
                             />
                         ))}
+
+                    <DiscoveredNodesSection peers={invitablePeers} onAdd={onInvitePeer} />
                 </Stack>
             </OverlayScrollbarsComponent>
         </Stack>

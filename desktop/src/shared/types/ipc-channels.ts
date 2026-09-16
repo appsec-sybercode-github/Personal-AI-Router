@@ -40,6 +40,15 @@ export interface ServiceStatus {
 }
 
 /**
+ * User configuration of the automatic subnet sweep (network-sweep.ts): whether
+ * it runs and which node-info ports it probes.
+ */
+export interface NetworkSweepConfig {
+    enabled: boolean
+    ports: number[]
+}
+
+/**
  * Application + bundled backend service binary versions, sourced from
  * `app.getVersion()` and the shipped `cli-bin/manifest.json` (stamped at build
  * time by `scripts/build-modular-binaries.ts`).
@@ -89,6 +98,8 @@ export interface IpcChannelMap {
     'service:restart': { request: void; response: void }
     'service:get-log-level': { request: void; response: ModularLogLevel }
     'service:set-log-level': { request: { level: ModularLogLevel }; response: void }
+    'service:get-network-sweep': { request: void; response: NetworkSweepConfig }
+    'service:set-network-sweep': { request: NetworkSweepConfig; response: void }
     'service:open-log-file': { request: void; response: void }
     'service:open-log-dir': { request: void; response: void }
     'service:get-versions': { request: void; response: ServiceVersions }

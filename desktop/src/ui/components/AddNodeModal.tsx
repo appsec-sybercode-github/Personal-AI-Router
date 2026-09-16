@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
     Button,
     Divider,
@@ -59,9 +59,15 @@ function draftPorts(drafts: PortDrafts): ManualServicePorts | undefined {
 interface AddNodeModalProps {
     open: boolean
     onOpenChange: (open: boolean) => void
+    /**
+     * When set, the invite for this discovered peer's address starts on its own
+     * the moment the modal opens — the "Add" click on a discovered row should
+     * land directly on the PIN panel, not on the manual address form.
+     */
+    inviteAddress?: string
 }
 
-export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
+export function AddNodeModal({ open, onOpenChange, inviteAddress }: AddNodeModalProps) {
     useBlurOnOpen(open)
     const [manualIp, setManualIp] = useState('')
     const [showPorts, setShowPorts] = useState(false)
@@ -70,6 +76,23 @@ export function AddNodeModal({ open, onOpenChange }: AddNodeModalProps) {
     const nodesThatCanBeAdded = useInvitablePeers()
 
     const ports = useMemo(() => draftPorts(portDrafts), [portDrafts])
+    const startInvite = pairing.start
+
+    // Auto-start the invite for a discovered peer, exactly once per open. The
+    // ref guard keeps a reset (panel "Start over") from re-firing while the
+    // modal is still open; a close clears it so the same peer can auto-start
+    // again next time it is clicked. Deps carry `startInvite`, never the
+    // `pairing` object — the object identity changes every render.
+    const autoStartedAddress = useRef<string | null>(null)
+    useEffect(() => {
+        if (!open) {
+            autoStartedAddress.current = null
+            return
+        }
+        if (!inviteAddress || autoStartedAddress.current === inviteAddress) return
+        autoStartedAddress.current = inviteAddress
+        void startInvite(inviteAddress)
+    }, [open, inviteAddress, startInvite])
 
     const handleOpenChange = useCallback(
         (next: boolean) => {

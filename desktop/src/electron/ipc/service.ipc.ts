@@ -16,7 +16,15 @@ import {
     destroyConnector,
     restartConnector
 } from '@/electron/connector'
-import { getModularLogLevel, setModularLogLevel } from '@/electron/config/ui-config'
+import {
+    getModularLogLevel,
+    getNetworkSweepPorts,
+    isNetworkSweepEnabled,
+    setModularLogLevel,
+    setNetworkSweepEnabled,
+    setNetworkSweepPorts
+} from '@/electron/config/ui-config'
+import { startNetworkSweep, stopNetworkSweep } from '@/electron/service-bridge/network-sweep'
 import {
     getModularSupervisor,
     readCliBinManifest
@@ -96,6 +104,24 @@ export function registerServiceIpc(): void {
         // so the change applies without a restart.
         setModularLogLevel(payload.level)
         getModularSupervisor().setLogLevel(payload.level)
+    })
+
+    safeHandle('service:get-network-sweep', async () => ({
+        enabled: isNetworkSweepEnabled(),
+        ports: getNetworkSweepPorts()
+    }))
+
+    safeHandle('service:set-network-sweep', async (_event, payload) => {
+        // Persist, then apply live: enabling starts the loop (idempotent — a
+        // round follows within seconds), disabling stops it and drops the nodes
+        // it had contributed.
+        setNetworkSweepEnabled(payload.enabled)
+        setNetworkSweepPorts(payload.ports)
+        if (payload.enabled) {
+            startNetworkSweep()
+        } else {
+            stopNetworkSweep({ dropSweptNodes: true })
+        }
     })
 
     safeHandle('service:open-log-file', async () => {

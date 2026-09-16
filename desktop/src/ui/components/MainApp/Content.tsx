@@ -16,10 +16,13 @@ import { useOverviewUiStore } from '@/ui/stores/overview-ui.store'
 
 export default function ClusterContent({
     setAddNodeModalOpen,
-    setEndPointModalOpen
+    setEndPointModalOpen,
+    onInviteDiscoveredNode
 }: {
     setAddNodeModalOpen?: (open: boolean) => void
     setEndPointModalOpen: (open: boolean) => void
+    /** Opens the Add Node modal and starts inviting the peer at this address. */
+    onInviteDiscoveredNode: (address: string) => void
 }) {
     const [filter, setFilter] = useJobsFilterState()
     const activeTab = useOverviewUiStore(state => state.activeTab)
@@ -48,7 +51,7 @@ export default function ClusterContent({
                     <WorkloadNodeConnections
                         style={{ marginLeft: `-${CONNECTIONS_WIDTH / 2}px` }}
                     />
-                    <NodeList />
+                    <NodeList onInvitePeer={onInviteDiscoveredNode} />
                 </Flex>
             )}
         </Stack>
